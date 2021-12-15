@@ -1314,43 +1314,90 @@ function quiver_using_hack(plotattributes::AKW)
     plotattributes[:seriestype] = :shape
 
     velocity = error_zipit(plotattributes[:quiver])
+    is_3d = haskey(plotattributes, :z) && !isnothing(plotattributes[:z])
     xorig, yorig = plotattributes[:x], plotattributes[:y]
+    zorig = is_3d ? plotattributes[:z] : []
 
     # for each point, we create an arrow of velocity vi, translated to the x/y coordinates
-    pts = P2[]
-    for i in 1:max(length(xorig), length(yorig))
+    pts = is_3d ? P3[] : P2[]
+    for i in 1:max(length(xorig), length(yorig), length(zorig))
 
-        # get the starting position
+        # get the starting position p
         xi = _cycle(xorig, i)
         yi = _cycle(yorig, i)
-        p = P2(xi, yi)
+        is_3d && (zi = _cycle(zorig, i))
 
         # get the velocity
         vi = _cycle(velocity, i)
-        vx, vy = if istuple(vi)
-            first(vi), last(vi)
+        if istuple(vi)
+            vx, vy = vi[1], vi[2]
+            is_3d && (vz = vi[3])
         elseif isscalar(vi)
-            vi, vi
+            vx, vy = vi, vi
+            is_3d && (vz = vi)
         elseif isa(vi, Function)
-            vi(xi, yi)
+            if is_3d
+                vx, vy, vz = vi(xi, yi, zi)
+            else
+                vx, vy = vi(xi, yi)
+            end
         else
             error("unexpected vi type $(typeof(vi)) for quiver: $vi")
         end
-        v = P2(vx, vy)
+        
+        # p is the base/tail of the arrow, p + v is the tip
+        p, v = is_3d ? (P3(xi, yi, zi), P3(vx, vy, vz)) : (P2(xi, yi), P2(vx, vy))
 
         dist = norm(v)
-        arrow_h = 0.1dist          # height of arrowhead
-        arrow_w = 0.5arrow_h       # halfwidth of arrowhead
-        U1 = v ./ dist             # vector of arrowhead height
-        U2 = P2(-U1[2], U1[1])     # vector of arrowhead halfwidth
-        U1 *= arrow_h
-        U2 *= arrow_w
-
-        ppv = p + v
-        nanappend!(pts, P2[p, ppv - U1, ppv - U1 + U2, ppv, ppv - U1 - U2, ppv - U1])
+        tip = p + v                                 # tip of arrow
+        U1 = v ./ dist                              # unit vector in direction of v
+        if is_3d
+            # vector of arrowhead halfwidth (== U1 rotated by 90° in dims 1,2)
+            U2 = P3(-U1[2], U1[1], 0)
+            # vector of arrowhead halfwidth (== U1 rotated by 90° in dims 1,3)
+            U3 = P3(-U1[3], 0, U1[1])
+            # scale height and width of arrow head
+            arrow_h = 0.1dist                       # height of arrowhead
+            arrow_w = 0.5arrow_h                    # halfwidth of arrowhead
+            U1 *= arrow_h
+            U2 *= arrow_w
+            U3 *= arrow_w
+            ahbase_c = tip - U1                     # centre of the arrowhead base
+            # left, right, top, bottom of the base of the arrowhead
+            ahbase_t = ahbase_c + U2
+            ahbase_l, ahbase_r = ahbase_c - U2/2 - cos(π/6)*U3, ahbase_c - U2/2 + cos(π/6)*U3
+            # The (triangular prism) arrowhead looking at its tip (ahbase_c is behind the tip):
+            #     t
+            #    tip 
+            #  l     r
+            pen_up = P3(NaN, NaN, NaN)
+            arrowi_pts = P3[p, ahbase_c, pen_up,    # base to base of arrowhead
+                ahbase_t, tip, ahbase_l, ahbase_t,  # left
+                ahbase_r, tip,                      # right
+                ahbase_l, ahbase_r]                 # bottom
+        else
+            # vector of arrowhead halfwidth (== U1 rotated by 90°)
+            U2 = P2(-U1[2], U1[1])
+            # scale height and width of arrow head
+            arrow_h = 0.1dist                       # height of arrowhead
+            arrow_w = 0.5arrow_h                    # halfwidth of arrowhead
+            U1 *= arrow_h
+            U2 *= arrow_w
+            ahbase_c = tip - U1                     # centre of arrowhead base
+            # arrowhead base corners
+            ahbase_l, ahbase_r = ahbase_c + U2 , ahbase_c - U2
+            arrowi_pts = P2[p, ahbase_c,            # base to base of arrowhead
+                ahbase_l, tip, ahbase_r, ahbase_c]  # arrowhead
+        end
+        nanappend!(pts, arrowi_pts)
+    end
+    
+    if is_3d
+        plotattributes[:x], plotattributes[:y], plotattributes[:z] = RecipesPipeline.unzip(pts[2:end])
+    else
+        plotattributes[:x], plotattributes[:y] = RecipesPipeline.unzip(pts[2:end])
     end
 
-    plotattributes[:x], plotattributes[:y] = RecipesPipeline.unzip(pts[2:end])
     # KW[plotattributes]
 end
 
